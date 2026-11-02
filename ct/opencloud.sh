@@ -78,17 +78,40 @@ function update_script() {
     fi
 
     # v9: regenerate opencloud.yaml with the new keys (auth_guest.service_account, thumbnails.thumbnail removed)
+    # while keeping every key the user added that `opencloud init` does not generate
     if ! grep -q '^auth_guest:' /etc/opencloud/opencloud.yaml; then
+      setup_yq
       msg_info "Migrating OpenCloud configuration"
-      cp /etc/opencloud/opencloud.yaml "/etc/opencloud/opencloud.yaml.bak-${OLD_VERSION:-v8}"
+      oc_cfg="/etc/opencloud/opencloud.yaml"
+      oc_bak="${oc_cfg}.bak-${OLD_VERSION:-v8}"
+      cp -p "$oc_cfg" "$oc_bak"
       rm -f /etc/opencloud/opencloud.config.patch
       $STD sudo -u opencloud /usr/bin/opencloud init --diff --config-path /etc/opencloud --insecure no
       if [[ -f /etc/opencloud/opencloud.config.patch ]]; then
-        $STD patch /etc/opencloud/opencloud.yaml </etc/opencloud/opencloud.config.patch
+        $STD patch "$oc_cfg" </etc/opencloud/opencloud.config.patch
         rm -f /etc/opencloud/opencloud.config.patch
       fi
-      chown opencloud:opencloud /etc/opencloud/opencloud.yaml
-      msg_ok "Migrated OpenCloud configuration"
+      # generated values win, keys only present in the old config are carried over
+      yq -i ". *n load(\"${oc_bak}\")" "$oc_cfg"
+      # thumbnail settings are read from webdav.thumbnails since v9
+      for oc_map in "thumbnail.resolutions:resolutions" "thumbnail.font_map_file:txt_fontmap_file" \
+        "thumbnail.max_input_image_file_size:max_input_image_file_size"; do
+        if yq -e ".thumbnails.${oc_map%%:*}" "$oc_cfg" &>/dev/null; then
+          yq -i ".webdav.thumbnails.${oc_map##*:} = .thumbnails.${oc_map%%:*}" "$oc_cfg"
+        fi
+      done
+      # the old root was the parent of files/, cache_dir is the cache directory itself
+      if yq -e '.thumbnails.filesystem_storage.root' "$oc_cfg" &>/dev/null; then
+        yq -i '.webdav.thumbnails.cache_dir = .thumbnails.filesystem_storage.root + "/cache"' "$oc_cfg"
+      fi
+      # max_input_image_file_size stays under thumbnails.thumbnail as well, the generator reads it there
+      yq -i 'del(.thumbnails.thumbnail.transfer_secret, .thumbnails.thumbnail.webdav_allow_insecure,
+        .thumbnails.thumbnail.cs3_allow_insecure, .thumbnails.thumbnail.resolutions,
+        .thumbnails.thumbnail.font_map_file, .thumbnails.filesystem_storage)' "$oc_cfg"
+      yq -i 'del(.thumbnails.thumbnail | select(length == 0)) | del(.thumbnails | select(length == 0))' "$oc_cfg"
+      chown opencloud:opencloud "$oc_cfg"
+      chmod 600 "$oc_cfg"
+      msg_ok "Migrated OpenCloud configuration (backup: ${oc_bak})"
     fi
 
     # v9: thumbnail cache moved to thumbnails/cache, the old folder is never read again
