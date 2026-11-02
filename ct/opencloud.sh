@@ -40,7 +40,7 @@ function update_script() {
     msg_ok "Allowed OpenCloud to embed Collabora"
   fi
 
-  RELEASE="v8.1.0"
+  RELEASE="v9.0.0"
   if check_for_gh_release "OpenCloud" "opencloud-eu/opencloud" "${RELEASE}" "each release is tested individually before the version is updated. Please do not open issues for this"; then
     OLD_VERSION="$(cat ~/.opencloud 2>/dev/null)"
     msg_info "Stopping services"
@@ -50,7 +50,7 @@ function update_script() {
     msg_info "Updating packages"
     apt_update_safe
     $STD apt dist-upgrade -y
-    ensure_dependencies "inotify-tools"
+    ensure_dependencies inotify-tools patch
     msg_ok "Updated packages"
 
     rm -f /usr/bin/{OpenCloud,opencloud}
@@ -75,6 +75,53 @@ function update_script() {
   service_account:\\
     service_account_id: $ACCOUNT_ID\\
     service_account_secret: $ACCOUNT_SECRET" /etc/opencloud/opencloud.yaml
+    fi
+
+    # v9: regenerate opencloud.yaml with the new keys (auth_guest.service_account, thumbnails.thumbnail removed)
+    # while keeping every key the user added that `opencloud init` does not generate
+    if ! grep -q '^auth_guest:' /etc/opencloud/opencloud.yaml; then
+      setup_yq
+      msg_info "Migrating OpenCloud configuration"
+      oc_cfg="/etc/opencloud/opencloud.yaml"
+      oc_bak="${oc_cfg}.bak-${OLD_VERSION:-v8}"
+      cp -p "$oc_cfg" "$oc_bak"
+      rm -f /etc/opencloud/opencloud.config.patch
+      $STD sudo -u opencloud /usr/bin/opencloud init --diff --config-path /etc/opencloud --insecure no
+      if [[ -f /etc/opencloud/opencloud.config.patch ]]; then
+        $STD patch "$oc_cfg" </etc/opencloud/opencloud.config.patch
+        rm -f /etc/opencloud/opencloud.config.patch
+      fi
+      # generated values win, keys only present in the old config are carried over
+      yq -i ". *n load(\"${oc_bak}\")" "$oc_cfg"
+      # thumbnail settings are read from webdav.thumbnails since v9
+      for oc_map in "thumbnail.resolutions:resolutions" "thumbnail.font_map_file:txt_fontmap_file" \
+        "thumbnail.max_input_image_file_size:max_input_image_file_size"; do
+        if yq -e ".thumbnails.${oc_map%%:*}" "$oc_cfg" &>/dev/null; then
+          yq -i ".webdav.thumbnails.${oc_map##*:} = .thumbnails.${oc_map%%:*}" "$oc_cfg"
+        fi
+      done
+      # the old root was the parent of files/, cache_dir is the cache directory itself
+      if yq -e '.thumbnails.filesystem_storage.root' "$oc_cfg" &>/dev/null; then
+        yq -i '.webdav.thumbnails.cache_dir = .thumbnails.filesystem_storage.root + "/cache"' "$oc_cfg"
+      fi
+      # max_input_image_file_size stays under thumbnails.thumbnail as well, the generator reads it there
+      yq -i 'del(.thumbnails.thumbnail.transfer_secret, .thumbnails.thumbnail.webdav_allow_insecure,
+        .thumbnails.thumbnail.cs3_allow_insecure, .thumbnails.thumbnail.resolutions,
+        .thumbnails.thumbnail.font_map_file, .thumbnails.filesystem_storage)' "$oc_cfg"
+      yq -i 'del(.thumbnails.thumbnail | select(length == 0)) | del(.thumbnails | select(length == 0))' "$oc_cfg"
+      chown opencloud:opencloud "$oc_cfg"
+      chmod 600 "$oc_cfg"
+      msg_ok "Migrated OpenCloud configuration (backup: ${oc_bak})"
+    fi
+
+    # v9: thumbnail cache moved to thumbnails/cache, the old folder is never read again
+    rm -rf /var/lib/opencloud/thumbnails/files
+    # v9: GRAPH_SPACES_DEFAULT_QUOTA was renamed
+    sed -i 's/GRAPH_SPACES_DEFAULT_QUOTA=/OC_SPACES_DEFAULT_QUOTA=/' /etc/opencloud/opencloud.env
+    if ! grep -q 'OC_ENABLE_GUEST_LINKS' /etc/opencloud/opencloud.env; then
+      sed -i '/^## Start additional services/i ## Guest links - requires SMTP (see above) and the notifications service\
+# OC_ENABLE_GUEST_LINKS=true\
+' /etc/opencloud/opencloud.env
     fi
 
     msg_info "Starting services"

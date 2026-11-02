@@ -68,7 +68,7 @@ $STD sudo -u cool coolconfig set-admin-password --user=admin --password="$COOLPA
 echo "$COOLPASS" >~/.coolpass
 msg_ok "Installed Collabora Online"
 
-fetch_and_deploy_gh_release "OpenCloud" "opencloud-eu/opencloud" "singlefile" "v8.1.0" "/usr/bin" "opencloud-*-linux-$(arch_resolve)"
+fetch_and_deploy_gh_release "OpenCloud" "opencloud-eu/opencloud" "singlefile" "v9.0.0" "/usr/bin" "opencloud-*-linux-$(arch_resolve)"
 mv /usr/bin/OpenCloud /usr/bin/opencloud
 
 msg_info "Configuring OpenCloud"
@@ -127,6 +127,9 @@ COLLABORATION_JWT_SECRET=
 # NOTIFICATIONS_SMTP_ENCRYPTION=starttls
 ## Allow insecure connections. Defaults to false.
 # NOTIFICATIONS_SMTP_INSECURE=false
+
+## Guest links - requires SMTP (see above) and the notifications service
+# OC_ENABLE_GUEST_LINKS=true
 
 ## Start additional services at runtime
 ## Examples: notifications, antivirus etc.
